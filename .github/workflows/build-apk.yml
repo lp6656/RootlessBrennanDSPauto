@@ -41,13 +41,14 @@ jobs:
       - name: Make Gradle wrapper executable
         run: chmod +x gradlew
 
-      - name: Assemble Full Release APK
-        run: ./gradlew assembleRootlessFullRelease --stacktrace
+      - name: Assemble Release APK
+        run: |
+          ./gradlew assembleRootlessFdroidRelease --stacktrace --no-daemon 2>&1 | tee build.log || (echo "=== BUILD LOG ===" && tail -n 120 build.log && exit 1)
 
       - name: Locate and Rename APK
         run: |
           mkdir -p release-output
-          APK_FILE=$(find app/build/outputs/apk/rootless/full/release/ -name "*.apk" | head -n 1)
+          APK_FILE=$(find app/build/outputs/apk/ -name "*release*.apk" | head -n 1)
           if [ -z "$APK_FILE" ]; then
             echo "Error: No APK found!"
             exit 1
