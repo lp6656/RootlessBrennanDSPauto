@@ -819,16 +819,13 @@ class RootlessAudioProcessorService : BaseAudioProcessorService() {
                 }
             }
 
-            try {
-                activeTrack.removeOnRoutingChangedListener(routingListener)
-            } catch (_: Exception) {}
-
-            try {
+                        try {
                 if (activeTrack.state != AudioTrack.STATE_UNINITIALIZED) {
                     activeTrack.stop()
                 }
                 activeTrack.release()
             } catch (_: Exception) {}
+        }, "BrennanDSP-Playback")
 
         captureThread!!.start()
         playbackThread!!.start()
