@@ -19,8 +19,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          submodules: recursive
           fetch-depth: 0
+
+      - name: Clone libjamesdsp native engine
+        run: |
+          rm -rf app/src/main/cpp/libjamesdsp
+          git clone --depth 1 -b extensions https://github.com/ThePBone/JamesDSPManager app/src/main/cpp/libjamesdsp
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
