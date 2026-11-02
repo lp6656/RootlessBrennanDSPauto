@@ -33,12 +33,10 @@ jobs:
           java-version: '17'
           cache: 'gradle'
 
-      - name: Set up Android SDK & NDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android NDK and CMake
+      - name: Accept Android SDK Licenses & Setup NDK
         run: |
-          sdkmanager "ndk;27.0.12077973" "cmake;3.22.1"
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;27.0.12077973" "cmake;3.22.1"
 
       - name: Make Gradle wrapper executable
         run: chmod +x gradlew
