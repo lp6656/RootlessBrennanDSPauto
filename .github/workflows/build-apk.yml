@@ -1,0 +1,77 @@
+name: Build RootlessBrennanDSP APK
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Signed Release APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Set up Android SDK & NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK and CMake
+        run: |
+          sdkmanager "ndk;27.0.12077973" "cmake;3.22.1"
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x gradlew
+
+      - name: Assemble Full Release APK
+        run: ./gradlew assembleRootlessFullRelease --stacktrace
+
+      - name: Locate and Rename APK
+        run: |
+          mkdir -p release-output
+          APK_FILE=$(find app/build/outputs/apk/rootless/full/release/ -name "*.apk" | head -n 1)
+          if [ -z "$APK_FILE" ]; then
+            echo "Error: No APK found!"
+            exit 1
+          fi
+          echo "Found APK: $APK_FILE"
+          cp "$APK_FILE" release-output/RootlessBrennanDSP-Auto-release.apk
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RootlessBrennanDSP-Auto-APK
+          path: release-output/RootlessBrennanDSP-Auto-release.apk
+          if-no-files-found: error
+
+      - name: Publish to GitHub Releases (on push to main)
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}-aa-fix
+          name: "RootlessBrennanDSP with Android Auto Fix (Build #${{ github.run_number }})"
+          body: |
+            ### Changes in this build:
+            - **Android Auto Routing Fix:** Added explicit device binding for `TYPE_USB_ACCESSORY`, `TYPE_BUS`, `TYPE_DOCK`, and `TYPE_USB_DEVICE`.
+            - **Dynamic AudioTrack Recovery:** Automatic re-creation of `AudioTrack` on OS route invalidation / Android 14/15 dead object errors (fixes music playing in silence over wired Android Auto).
+            - **Auto-Exclusion of Android Auto Services:** `com.google.android.projection.gearhead` and car services are excluded from session conflicts to prevent crashes and error dialogs.
+            - **Signed with standard debug key:** Ready to sideload directly onto Google Pixel devices.
+          files: release-output/RootlessBrennanDSP-Auto-release.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

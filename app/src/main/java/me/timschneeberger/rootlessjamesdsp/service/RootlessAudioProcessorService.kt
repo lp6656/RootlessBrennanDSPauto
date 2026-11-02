@@ -549,7 +549,7 @@ class RootlessAudioProcessorService : BaseAudioProcessorService() {
         ringBuffer = ring
 
         var recorder: AudioRecord
-        val track: AudioTrack
+        var track: AudioTrack
         try {
             recorder = buildAudioRecord(encodingFormat, sampleRate, recHwBuf)
             track = buildAudioTrack(encodingFormat, sampleRate, trackHwBuf)
@@ -670,22 +670,37 @@ class RootlessAudioProcessorService : BaseAudioProcessorService() {
             var processedChunkCount = 0L
             var preRolled = false
 
+                        var activeTrack: AudioTrack = track
+            var trackNeedsRecreate = false
+
             while (!isProcessorDisposing) {
-                if (routingChanged.compareAndSet(true, false)) {
-                    Timber.i("Audio routing changed: flushing ring buffer and AudioTrack to maintain zero latency")
-                    ring.flush()
-                    if (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
-                        track.pause()
-                        track.flush()
+                if (routingChanged.compareAndSet(true, false) || trackNeedsRecreate) {
+                    trackNeedsRecreate = false
+                    Timber.i("Audio routing changed or track recovery required: recreating AudioTrack")
+                    try {
+                        activeTrack.removeOnRoutingChangedListener(routingListener)
+                        if (activeTrack.state != AudioTrack.STATE_UNINITIALIZED) {
+                            activeTrack.stop()
+                        }
+                        activeTrack.release()
+                    } catch (e: Exception) {
+                        Timber.w(e, "Error releasing old track")
                     }
+                    try {
+                        activeTrack = buildAudioTrack(encodingFormat, sampleRate, trackHwBuf)
+                        activeTrack.addOnRoutingChangedListener(routingListener, Handler(Looper.getMainLooper()))
+                    } catch (e: Exception) {
+                        Timber.e(e, "Failed to recreate AudioTrack")
+                    }
+                    ring.flush()
                     preRolled = false
                     fadeInSamplesRemaining = totalFadeInSamples
                 }
 
                 if (isProcessorIdle && suspendOnIdle) {
-                    if (track.state == AudioTrack.STATE_INITIALIZED &&
-                        track.playState != AudioTrack.PLAYSTATE_STOPPED) {
-                        track.stop()
+                    if (activeTrack.state == AudioTrack.STATE_INITIALIZED &&
+                        activeTrack.playState != AudioTrack.PLAYSTATE_STOPPED) {
+                        activeTrack.stop()
                     }
                     preRolled = false
                     try {
@@ -703,9 +718,9 @@ class RootlessAudioProcessorService : BaseAudioProcessorService() {
                         continue
                     }
                     preRolled = true
-                    if (track.state == AudioTrack.STATE_INITIALIZED &&
-                        track.playState != AudioTrack.PLAYSTATE_PLAYING) {
-                        track.play()
+                    if (activeTrack.state == AudioTrack.STATE_INITIALIZED &&
+                        activeTrack.playState != AudioTrack.PLAYSTATE_PLAYING) {
+                        activeTrack.play()
                         Timber.d("AudioTrack playing (low-latency pre-rolled start)")
                     }
                 }
@@ -743,11 +758,13 @@ class RootlessAudioProcessorService : BaseAudioProcessorService() {
                     directOutBuf.limit(validShorts * Short.SIZE_BYTES)
 
                     var bytesRemaining = validShorts * Short.SIZE_BYTES
-                    while (bytesRemaining > 0 && !isProcessorDisposing) {
-                        val written = track.write(directOutBuf, bytesRemaining, AudioTrack.WRITE_BLOCKING)
+                    while (bytesRemaining > 0 && !isProcessorDisposing && !trackNeedsRecreate) {
+                        val written = activeTrack.write(directOutBuf, bytesRemaining, AudioTrack.WRITE_BLOCKING)
                         if (written > 0) {
                             bytesRemaining -= written
                         } else {
+                            Timber.w("AudioTrack write returned $written; marking track for recreation")
+                            trackNeedsRecreate = true
                             break
                         }
                     }
@@ -774,11 +791,13 @@ class RootlessAudioProcessorService : BaseAudioProcessorService() {
                     directOutBuf.limit(validBytes)
 
                     var bytesRemaining = validBytes
-                    while (bytesRemaining > 0 && !isProcessorDisposing) {
-                        val written = track.write(directOutBuf, bytesRemaining, AudioTrack.WRITE_BLOCKING)
+                    while (bytesRemaining > 0 && !isProcessorDisposing && !trackNeedsRecreate) {
+                        val written = activeTrack.write(directOutBuf, bytesRemaining, AudioTrack.WRITE_BLOCKING)
                         if (written > 0) {
                             bytesRemaining -= written
                         } else {
+                            Timber.w("AudioTrack write returned $written; marking track for recreation")
+                            trackNeedsRecreate = true
                             break
                         }
                     }
@@ -801,16 +820,15 @@ class RootlessAudioProcessorService : BaseAudioProcessorService() {
             }
 
             try {
-                track.removeOnRoutingChangedListener(routingListener)
+                activeTrack.removeOnRoutingChangedListener(routingListener)
             } catch (_: Exception) {}
 
             try {
-                if (track.state != AudioTrack.STATE_UNINITIALIZED) {
-                    track.stop()
+                if (activeTrack.state != AudioTrack.STATE_UNINITIALIZED) {
+                    activeTrack.stop()
                 }
-                track.release()
+                activeTrack.release()
             } catch (_: Exception) {}
-        }, "BrennanDSP-Playback")
 
         captureThread!!.start()
         playbackThread!!.start()
@@ -882,13 +900,30 @@ class RootlessAudioProcessorService : BaseAudioProcessorService() {
 
         Timber.d("Using AudioTrack buffer size $bufferSize (min: $minBuf)")
 
-        return AudioTrack.Builder()
+          return AudioTrack.Builder()
             .setAudioFormat(format)
             .setTransferMode(AudioTrack.MODE_STREAM)
             .setAudioAttributes(attributesBuilder.build())
             .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_NONE)
             .setBufferSizeInBytes(bufferSize)
-            .build()
+            .build().also { newTrack ->
+                try {
+                    val outputDevices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+                    val carUsbSink = outputDevices.firstOrNull {
+                        it.isSink && (it.type == AudioDeviceInfo.TYPE_USB_ACCESSORY ||
+                                     it.type == AudioDeviceInfo.TYPE_USB_DEVICE ||
+                                     it.type == AudioDeviceInfo.TYPE_USB_HEADSET ||
+                                     it.type == AudioDeviceInfo.TYPE_BUS ||
+                                     it.type == AudioDeviceInfo.TYPE_DOCK)
+                    }
+                    if (carUsbSink != null) {
+                        Timber.i("Binding preferred device to USB/Car sink: ${carUsbSink.productName} (type: ${carUsbSink.type})")
+                        newTrack.setPreferredDevice(carUsbSink)
+                    }
+                } catch (e: Exception) {
+                    Timber.w(e, "Could not set preferred device for AudioTrack")
+                }
+            }
     }
 
     @SuppressLint("MissingPermission")

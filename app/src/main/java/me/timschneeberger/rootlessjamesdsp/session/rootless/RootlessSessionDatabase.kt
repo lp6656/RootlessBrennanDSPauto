@@ -15,7 +15,7 @@ class RootlessSessionDatabase(context: Context) : BaseSessionDatabase(context) {
     private var sessionLossListener: OnSessionLossListener? = null
     private var appProblemListener: OnAppProblemListener? = null
 
-    override val excludedPackages = arrayOf(
+       override val excludedPackages = arrayOf(
         context.packageName,
 
         "com.google.android.googlequicksearchbox",
@@ -23,7 +23,13 @@ class RootlessSessionDatabase(context: Context) : BaseSessionDatabase(context) {
         "com.kieronquinn.app.pixelambientmusic",
         "com.draftkings.sportsbook",
         "com.samsung.gpuwatchapp",
-        "com.kalkiarts.hexabloompro"
+        "com.kalkiarts.hexabloompro",
+
+        // Android Auto projection and car services
+        "com.google.android.projection.gearhead",
+        "com.google.android.apps.auto.carservice",
+        "com.google.android.car",
+        "com.google.android.embedded.projection"
     )
 
     override fun shouldAcceptSessionDump(id: Int, session: AudioSessionDumpEntry): Boolean {

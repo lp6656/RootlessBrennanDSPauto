@@ -36,27 +36,45 @@ class RoutingObserver(val context: Context) : MediaRouter.Callback(), KoinCompon
         get() = DeviceGroup.from(type)
 
     private fun MediaRouter.RouteInfo.findOutputDevice(): Device? {
-        return context.getSystemService<AudioManager>()!!
-            .getDevices(AudioManager.GET_DEVICES_OUTPUTS)
-            .filter(AudioDeviceInfo::isSink)
-            .find { info ->
-                info.deviceGroup.let {
-                    when {
-                        isDeviceSpeaker -> it == DeviceGroup.SPEAKER
-                        isBluetooth -> it == DeviceGroup.BLUETOOTH
-                        isUsb -> it == DeviceGroup.USB
-                        isHeadphone -> it == DeviceGroup.ANALOG
-                        isHdmi -> it == DeviceGroup.HDMI
-                        else -> it == DeviceGroup.OTHER
-                    }
+        val audioManager = context.getSystemService<AudioManager>()!!
+        val sinks = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).filter(AudioDeviceInfo::isSink)
+
+        // Prioritize external USB / Android Auto accessory if present and not on Bluetooth/Headphones
+        val usbSink = sinks.find {
+            it.type == AudioDeviceInfo.TYPE_USB_ACCESSORY ||
+            it.type == AudioDeviceInfo.TYPE_USB_DEVICE ||
+            it.type == AudioDeviceInfo.TYPE_USB_HEADSET ||
+            it.type == AudioDeviceInfo.TYPE_BUS ||
+            it.type == AudioDeviceInfo.TYPE_DOCK ||
+            it.type == AudioDeviceInfo.TYPE_AUX_LINE
+        }
+        if (usbSink != null && !isBluetooth && !isHeadphone) {
+            val devName = if (usbSink.productName.isNotEmpty()) usbSink.productName.toString() else "Android Auto (USB)"
+            return Device(
+                devName,
+                usbSink.address,
+                DeviceGroup.USB
+            )
+        }
+
+        return sinks.find { info ->
+            info.deviceGroup.let {
+                when {
+                    isBluetooth -> it == DeviceGroup.BLUETOOTH
+                    isUsb -> it == DeviceGroup.USB
+                    isHeadphone -> it == DeviceGroup.ANALOG
+                    isHdmi -> it == DeviceGroup.HDMI
+                    isDeviceSpeaker -> it == DeviceGroup.SPEAKER
+                    else -> it == DeviceGroup.OTHER
                 }
-            }?.let { device ->
-                Device(
-                    device.productName.toString(),
-                    device.address,
-                    device.deviceGroup
-                )
             }
+        }?.let { device ->
+            Device(
+                device.productName.toString(),
+                device.address,
+                device.deviceGroup
+            )
+        }
     }
 
     private val MediaRouter.RouteInfo.isHdmi: Boolean
@@ -226,7 +244,10 @@ class RoutingObserver(val context: Context) : MediaRouter.Callback(), KoinCompon
                 AudioDeviceInfo.TYPE_HEARING_AID -> BLUETOOTH
                 AudioDeviceInfo.TYPE_USB_DEVICE,
                 AudioDeviceInfo.TYPE_USB_ACCESSORY,
-                AudioDeviceInfo.TYPE_USB_HEADSET -> USB
+                AudioDeviceInfo.TYPE_USB_HEADSET,
+                AudioDeviceInfo.TYPE_DOCK,
+                AudioDeviceInfo.TYPE_BUS,
+                AudioDeviceInfo.TYPE_AUX_LINE -> USB
                 AudioDeviceInfo.TYPE_HDMI_ARC,
                 AudioDeviceInfo.TYPE_HDMI_EARC,
                 AudioDeviceInfo.TYPE_HDMI -> HDMI
