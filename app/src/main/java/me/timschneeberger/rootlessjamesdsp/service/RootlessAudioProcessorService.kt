@@ -675,18 +675,31 @@ class RootlessAudioProcessorService : BaseAudioProcessorService() {
             var trackNeedsRecreate = false
 
             while (!isProcessorDisposing) {
-                if (routingChanged.compareAndSet(true, false) || trackNeedsRecreate) {
+                // Route changes (speaker/bluetooth): simply flush the buffer to maintain zero latency.
+                // Do NOT destroy the AudioTrack; Android seamlessly routes the existing track.
+                if (routingChanged.compareAndSet(true, false)) {
+                    Timber.i("Audio routing changed: flushing ring buffer and AudioTrack to maintain zero latency")
+                    ring.flush()
+                    if (activeTrack.state == AudioTrack.STATE_INITIALIZED &&
+                        activeTrack.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                        activeTrack.pause()
+                        activeTrack.flush()
+                    }
+                    preRolled = false
+                    fadeInSamplesRemaining = totalFadeInSamples
+                }
+
+                // Only recreate if an actual fatal / dead-object write error occurred
+                if (trackNeedsRecreate) {
                     trackNeedsRecreate = false
-                    Timber.i("Audio routing changed or track recovery required: recreating AudioTrack")
+                    Timber.i("AudioTrack dead object error recovery: recreating AudioTrack")
                     try {
                         activeTrack.removeOnRoutingChangedListener(routingListener)
                         if (activeTrack.state != AudioTrack.STATE_UNINITIALIZED) {
                             activeTrack.stop()
                         }
                         activeTrack.release()
-                    } catch (e: Exception) {
-                        Timber.w(e, "Error releasing old track")
-                    }
+                    } catch (_: Exception) {}
                     try {
                         activeTrack = buildAudioTrack(encodingFormat, sampleRate, trackHwBuf)
                         activeTrack.addOnRoutingChangedListener(routingListener, Handler(Looper.getMainLooper()))
@@ -763,9 +776,11 @@ class RootlessAudioProcessorService : BaseAudioProcessorService() {
                         val written = activeTrack.write(directOutBuf, bytesRemaining, AudioTrack.WRITE_BLOCKING)
                         if (written > 0) {
                             bytesRemaining -= written
-                        } else {
-                            Timber.w("AudioTrack write returned $written; marking track for recreation")
+                        } else if (written < 0) {
+                            Timber.w("AudioTrack write error $written; marking track for recreation")
                             trackNeedsRecreate = true
+                            break
+                        } else {
                             break
                         }
                     }
@@ -796,9 +811,11 @@ class RootlessAudioProcessorService : BaseAudioProcessorService() {
                         val written = activeTrack.write(directOutBuf, bytesRemaining, AudioTrack.WRITE_BLOCKING)
                         if (written > 0) {
                             bytesRemaining -= written
-                        } else {
-                            Timber.w("AudioTrack write returned $written; marking track for recreation")
+                        } else if (written < 0) {
+                            Timber.w("AudioTrack write error $written; marking track for recreation")
                             trackNeedsRecreate = true
+                            break
+                        } else {
                             break
                         }
                     }
@@ -907,15 +924,12 @@ class RootlessAudioProcessorService : BaseAudioProcessorService() {
             .build().also { newTrack ->
                 try {
                     val outputDevices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+                    // Only bind if specifically connected to Android Auto (USB Accessory or Bus)
                     val carUsbSink = outputDevices.firstOrNull {
-                        it.isSink && (it.type == AudioDeviceInfo.TYPE_USB_ACCESSORY ||
-                                     it.type == AudioDeviceInfo.TYPE_USB_DEVICE ||
-                                     it.type == AudioDeviceInfo.TYPE_USB_HEADSET ||
-                                     it.type == AudioDeviceInfo.TYPE_BUS ||
-                                     it.type == AudioDeviceInfo.TYPE_DOCK)
+                        it.isSink && (it.type == AudioDeviceInfo.TYPE_USB_ACCESSORY || it.type == AudioDeviceInfo.TYPE_BUS)
                     }
                     if (carUsbSink != null) {
-                        Timber.i("Binding preferred device to USB/Car sink: ${carUsbSink.productName} (type: ${carUsbSink.type})")
+                        Timber.i("Binding preferred device to Android Auto car sink: ${carUsbSink.productName}")
                         newTrack.setPreferredDevice(carUsbSink)
                     }
                 } catch (e: Exception) {
