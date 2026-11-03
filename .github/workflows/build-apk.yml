@@ -43,26 +43,45 @@ jobs:
 
       - name: Assemble Release APK
         run: |
-          ./gradlew assembleRootlessFdroidRelease --stacktrace --no-daemon 2>&1 | tee build.log || (echo "=== BUILD LOG ===" && tail -n 120 build.log && exit 1)
+          ./gradlew assembleRootlessFdroidRelease --stacktrace --no-daemon
 
       - name: Locate and Rename APK
         run: |
           mkdir -p release-output
-          echo "=== Found APK files: ==="
-          find app/build/outputs/ -name "*.apk"
-          APK_FILE=$(find app/build/outputs/ -name "*.apk" | head -n 1)
+          echo "=== Searching workspace for APKs ==="
+          find . -name "*.apk" -not -path "*/intermediates/*"
+
+          # Pick the best APK (universal, arm64, or any release)
+          APK_FILE=$(find . -name "*universal*release*.apk" -not -path "*/intermediates/*" | head -n 1)
           if [ -z "$APK_FILE" ]; then
-            echo "Error: No APK found!"
+            APK_FILE=$(find . -name "*arm64*release*.apk" -not -path "*/intermediates/*" | head -n 1)
+          fi
+          if [ -z "$APK_FILE" ]; then
+            APK_FILE=$(find . -name "*release*.apk" -not -path "*/intermediates/*" | head -n 1)
+          fi
+          if [ -z "$APK_FILE" ]; then
+            APK_FILE=$(find . -name "*.apk" -not -path "*/intermediates/*" | head -n 1)
+          fi
+
+          if [ -z "$APK_FILE" ]; then
+            echo "Error: No APK found anywhere in workspace!"
             exit 1
           fi
-          echo "Selected APK: $APK_FILE"
+
+          echo "Selected primary APK: $APK_FILE"
           cp "$APK_FILE" release-output/RootlessBrennanDSP-Auto-release.apk
+
+          # Also copy all non-intermediate APKs
+          find . -name "*.apk" -not -path "*/intermediates/*" -not -path "*/release-output/*" -exec cp {} release-output/ \;
+
+          echo "=== Prepared APK Files ==="
+          ls -la release-output/
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: RootlessBrennanDSP-Auto-APK
-          path: release-output/RootlessBrennanDSP-Auto-release.apk
+          path: release-output/*.apk
           if-no-files-found: error
 
       - name: Publish to GitHub Releases (on push to main)
@@ -73,10 +92,10 @@ jobs:
           name: "RootlessBrennanDSP with Android Auto Fix (Build #${{ github.run_number }})"
           body: |
             ### Changes in this build:
-            - **Android Auto Routing Fix:** Added explicit device binding for `TYPE_USB_ACCESSORY`, `TYPE_BUS`, `TYPE_DOCK`, and `TYPE_USB_DEVICE`.
-            - **Dynamic AudioTrack Recovery:** Automatic re-creation of `AudioTrack` on OS route invalidation / Android 14/15 dead object errors (fixes music playing in silence over wired Android Auto).
-            - **Auto-Exclusion of Android Auto Services:** `com.google.android.projection.gearhead` and car services are excluded from session conflicts to prevent crashes and error dialogs.
-            - **Signed with standard debug key:** Ready to sideload directly onto Google Pixel devices.
-          files: release-output/RootlessBrennanDSP-Auto-release.apk
+            - **Android Auto Routing Fix:** Explicit device binding for `TYPE_USB_ACCESSORY`, `TYPE_BUS`, `TYPE_DOCK`, and `TYPE_USB_DEVICE`.
+            - **Dynamic AudioTrack Recovery:** Automatic recovery on OS route invalidation / Android 14/15 dead object errors (fixes music playing in silence over wired Android Auto).
+            - **Auto-Exclusion of Android Auto Services:** `com.google.android.projection.gearhead` and car services excluded from session conflicts.
+            - **Signed with debug key:** Ready to sideload directly onto Google Pixel devices.
+          files: release-output/*.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
