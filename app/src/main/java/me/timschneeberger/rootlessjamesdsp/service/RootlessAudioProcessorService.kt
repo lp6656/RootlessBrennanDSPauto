@@ -104,7 +104,9 @@ class RootlessAudioProcessorService : BaseAudioProcessorService() {
 
     private var excludeRestrictedSessions = false
 
-        private val audioDeviceCallback = object : AudioDeviceCallback() {
+        private val routingChanged = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    private val audioDeviceCallback = object : AudioDeviceCallback() {
         override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
             val carUsb = addedDevices?.firstOrNull {
                 it.isSink && (it.type == AudioDeviceInfo.TYPE_USB_ACCESSORY || it.type == AudioDeviceInfo.TYPE_BUS)
@@ -593,7 +595,7 @@ class RootlessAudioProcessorService : BaseAudioProcessorService() {
             engine.sampleRate = sampleRate.toFloat()
         }
 
-        val routingChanged = java.util.concurrent.atomic.AtomicBoolean(false)
+        routingChanged.set(false)
         val routingListener = AudioRouting.OnRoutingChangedListener { routing ->
             Timber.i("AudioTrack routing changed (device: ${routing.routedDevice?.type}); requesting buffer flush to eliminate latency drift")
             routingChanged.set(true)
