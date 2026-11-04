@@ -29,7 +29,9 @@ class RootlessSessionDatabase(context: Context) : BaseSessionDatabase(context) {
         "com.google.android.projection.gearhead",
         "com.google.android.apps.auto.carservice",
         "com.google.android.car",
-        "com.google.android.embedded.projection"
+        "com.google.android.embedded.projection",
+        "com.google.android.gms.car",
+        "com.google.android.tts"
     )
 
     override fun shouldAcceptSessionDump(id: Int, session: AudioSessionDumpEntry): Boolean {

@@ -45,6 +45,10 @@
             android:name="firebase_crashlytics_collection_enabled"
             android:value="${crashlyticsCollectionEnabled}" />
 
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+
         <!-- Activities -->
         <activity
             android:name=".activity.MainActivity"
@@ -263,6 +267,16 @@
             </intent-filter>
             <meta-data android:name="android.service.quicksettings.TOGGLEABLE_TILE"
                 android:value="true" />
+        </service>
+
+        <service
+            android:name=".service.CarAudioControlService"
+            android:label="${label}"
+            android:icon="@mipmap/ic_dsp_launcher"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.media.browse.MediaBrowserService" />
+            </intent-filter>
         </service>
 
         <service
