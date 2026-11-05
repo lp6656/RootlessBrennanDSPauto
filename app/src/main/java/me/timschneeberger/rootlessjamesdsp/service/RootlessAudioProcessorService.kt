@@ -10,7 +10,6 @@ import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
-import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
@@ -104,30 +103,6 @@ class RootlessAudioProcessorService : BaseAudioProcessorService() {
 
     private var excludeRestrictedSessions = false
 
-        private val routingChanged = java.util.concurrent.atomic.AtomicBoolean(false)
-
-    private val audioDeviceCallback = object : AudioDeviceCallback() {
-        override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
-            val carUsb = addedDevices?.firstOrNull {
-                it.isSink && (it.type == AudioDeviceInfo.TYPE_USB_ACCESSORY || it.type == AudioDeviceInfo.TYPE_BUS)
-            }
-            if (carUsb != null) {
-                Timber.i("AudioDeviceCallback: Car USB accessory connected (${carUsb.productName})")
-                routingChanged.set(true)
-            }
-        }
-
-        override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) {
-            val carUsb = removedDevices?.firstOrNull {
-                it.isSink && (it.type == AudioDeviceInfo.TYPE_USB_ACCESSORY || it.type == AudioDeviceInfo.TYPE_BUS)
-            }
-            if (carUsb != null) {
-                Timber.i("AudioDeviceCallback: Car USB accessory disconnected")
-                routingChanged.set(true)
-            }
-        }
-    }
-
     private var isProcessorDisposing = false
     private var isServiceDisposing = false
 
@@ -149,7 +124,6 @@ class RootlessAudioProcessorService : BaseAudioProcessorService() {
         RootlessAudioProcessorService.isRunning = true
 
         audioManager = getSystemService<AudioManager>()!!
-        audioManager.registerAudioDeviceCallback(audioDeviceCallback, Handler(Looper.getMainLooper()))
         mediaProjectionManager = getSystemService<MediaProjectionManager>()!!
         notificationManager = getSystemService<NotificationManager>()!!
 
@@ -275,7 +249,6 @@ class RootlessAudioProcessorService : BaseAudioProcessorService() {
         sessionManager.destroy()
 
         preferences.unregisterOnSharedPreferenceChangeListener(preferencesListener)
-        audioManager.unregisterAudioDeviceCallback(audioDeviceCallback)
         notificationManager.cancel(Notifications.ID_SERVICE_STATUS)
 
         super.onDestroy()
@@ -302,8 +275,7 @@ class RootlessAudioProcessorService : BaseAudioProcessorService() {
 
             this@RootlessAudioProcessorService.toast(getString(R.string.capture_permission_revoked_toast))
 
-            audioManager.unregisterAudioDeviceCallback(audioDeviceCallback)
-        notificationManager.cancel(Notifications.ID_SERVICE_STATUS)
+            notificationManager.cancel(Notifications.ID_SERVICE_STATUS)
             stopSelf()
         }
     }
@@ -371,8 +343,7 @@ class RootlessAudioProcessorService : BaseAudioProcessorService() {
     private val onAppProblemListener = object : RootlessSessionDatabase.OnAppProblemListener {
         override fun onAppProblemDetected(uid: Int) {
             if(!preferences.get<Boolean>(R.string.key_session_app_problem_ignore)) {
-                audioManager.unregisterAudioDeviceCallback(audioDeviceCallback)
-        notificationManager.cancel(Notifications.ID_SERVICE_STATUS)
+                notificationManager.cancel(Notifications.ID_SERVICE_STATUS)
                 if(preferencesVar.get<Boolean>(R.string.key_is_activity_active) ||
                     preferencesVar.get<Boolean>(R.string.key_is_app_compat_activity_active)) {
                     startActivity(
@@ -595,7 +566,7 @@ class RootlessAudioProcessorService : BaseAudioProcessorService() {
             engine.sampleRate = sampleRate.toFloat()
         }
 
-        routingChanged.set(false)
+        val routingChanged = java.util.concurrent.atomic.AtomicBoolean(false)
         val routingListener = AudioRouting.OnRoutingChangedListener { routing ->
             Timber.i("AudioTrack routing changed (device: ${routing.routedDevice?.type}); requesting buffer flush to eliminate latency drift")
             routingChanged.set(true)
@@ -704,37 +675,13 @@ class RootlessAudioProcessorService : BaseAudioProcessorService() {
             var trackNeedsRecreate = false
 
             while (!isProcessorDisposing) {
-                // Route changes (speaker/bluetooth/car USB): dynamically verify and update preferred device
+                // Route changes (speaker/bluetooth/car USB/etc.):
+                // Android OS automatically and seamlessly routes the USAGE_MEDIA AudioTrack.
+                // We simply trim any accumulated ring buffer latency backlog without pausing the track,
+                // eliminating stuttering and preventing rapid play/pause flapping on USB connection.
                 if (routingChanged.compareAndSet(true, false)) {
-                    Timber.i("Audio routing changed: flushing ring buffer and updating route binding")
-                    try {
-                        val outputDevices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
-                        val carUsbSink = outputDevices.firstOrNull {
-                            it.isSink && (it.type == AudioDeviceInfo.TYPE_USB_ACCESSORY || it.type == AudioDeviceInfo.TYPE_BUS)
-                        }
-                        if (carUsbSink != null) {
-                            if (activeTrack.preferredDevice != carUsbSink) {
-                                Timber.i("Dynamic route update: binding preferred device to Car USB sink (${carUsbSink.productName})")
-                                activeTrack.setPreferredDevice(carUsbSink)
-                            }
-                        } else {
-                            if (activeTrack.preferredDevice != null) {
-                                Timber.i("Car USB disconnected: clearing preferred device")
-                                activeTrack.setPreferredDevice(null)
-                            }
-                        }
-                    } catch (e: Exception) {
-                        Timber.w(e, "Could not update preferred device on routing change")
-                    }
-
-                    ring.flush()
-                    if (activeTrack.state == AudioTrack.STATE_INITIALIZED &&
-                        activeTrack.playState == AudioTrack.PLAYSTATE_PLAYING) {
-                        activeTrack.pause()
-                        activeTrack.flush()
-                    }
-                    preRolled = false
-                    fadeInSamplesRemaining = totalFadeInSamples
+                    Timber.i("Audio routing changed: trimming ring buffer to enforce ultra-low latency")
+                    ring.trimToWatermark(2)
                 }
 
                 // Only recreate if an actual fatal / dead-object write error occurred
@@ -963,27 +910,13 @@ class RootlessAudioProcessorService : BaseAudioProcessorService() {
 
         Timber.d("Using AudioTrack buffer size $bufferSize (min: $minBuf)")
 
-          return AudioTrack.Builder()
+        return AudioTrack.Builder()
             .setAudioFormat(format)
             .setTransferMode(AudioTrack.MODE_STREAM)
             .setAudioAttributes(attributesBuilder.build())
             .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_NONE)
             .setBufferSizeInBytes(bufferSize)
-            .build().also { newTrack ->
-                try {
-                    val outputDevices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
-                    // Only bind if specifically connected to Android Auto (USB Accessory or Bus)
-                    val carUsbSink = outputDevices.firstOrNull {
-                        it.isSink && (it.type == AudioDeviceInfo.TYPE_USB_ACCESSORY || it.type == AudioDeviceInfo.TYPE_BUS)
-                    }
-                    if (carUsbSink != null) {
-                        Timber.i("Binding preferred device to Android Auto car sink: ${carUsbSink.productName}")
-                        newTrack.setPreferredDevice(carUsbSink)
-                    }
-                } catch (e: Exception) {
-                    Timber.w(e, "Could not set preferred device for AudioTrack")
-                }
-            }
+            .build()
     }
 
     @SuppressLint("MissingPermission")
